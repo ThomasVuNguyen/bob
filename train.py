@@ -435,20 +435,17 @@ To save the final model as LoRA adapters, either use Huggingface's `push_to_hub`
 **[NOTE]** This ONLY saves the LoRA adapters, and not the full model. To save to 16bit or GGUF, scroll down!
 """
 
-# Local saving
-if SAVE_LOCAL:
-    model.save_pretrained(HUB_MODEL_NAME)
-    tokenizer.save_pretrained(HUB_MODEL_NAME)
-    print(f"Model and tokenizer saved locally to {HUB_MODEL_NAME}")
-
-# Get Hugging Face token from environment
+# Get Hugging Face token from environment or login
 hf_token = os.getenv("HF_TOKEN")
-if PUSH_TO_HUB and hf_token:
-    model.push_to_hub(HUB_MODEL_NAME, token=hf_token)
-    tokenizer.push_to_hub(HUB_MODEL_NAME, token=hf_token)
-    print("Model and tokenizer uploaded to Hugging Face Hub")
-elif PUSH_TO_HUB and not hf_token:
-    print("Warning: HF_TOKEN not found in environment variables. Skipping Hugging Face upload.")
+if not hf_token:
+    try:
+        from huggingface_hub import HfFolder
+        hf_token = HfFolder.get_token()
+    except Exception:
+        hf_token = None
+
+# Skip local LoRA adapter saving - we only want the 16-bit merged model
+print("Skipping LoRA adapter saving - will only upload 16-bit merged model")
 
 """Now if you want to load the LoRA adapters we just saved for inference, set `False` to `True`:"""
 
@@ -465,27 +462,59 @@ if False:
 We also support saving to `float16` directly. Select `merged_16bit` for float16 or `merged_4bit` for int4. We also allow `lora` adapters as a fallback. Use `push_to_hub_merged` to upload to your Hugging Face account! You can go to https://huggingface.co/settings/tokens for your personal tokens.
 """
 
-# Merge to 16bit
+# Save and upload 16-bit merged model (without -16bit suffix)
 if SAVE_16BIT:
-    model.save_pretrained_merged(f"{HUB_MODEL_NAME}-16bit", tokenizer, save_method="merged_16bit")
+    print("\n" + "="*50)
+    print("SAVING 16-BIT MERGED MODEL")
+    print("="*50)
+    
+    # Save locally first
+    local_16bit_path = f"{HUB_MODEL_NAME}_temp_16bit"
+    model.save_pretrained_merged(local_16bit_path, tokenizer, save_method="merged_16bit")
+    print(f"16-bit model saved locally to: {local_16bit_path}")
+    
+    # Upload to HF Hub with original name (no -16bit suffix)
     if PUSH_TO_HUB and hf_token:
-        model.push_to_hub_merged(f"{HUB_MODEL_NAME}-16bit", tokenizer, save_method="merged_16bit", token=hf_token)
-        print("16-bit merged model uploaded to Hugging Face Hub")
+        print(f"Uploading 16-bit merged model to: {HUB_MODEL_NAME}")
+        model.push_to_hub_merged(HUB_MODEL_NAME, tokenizer, save_method="merged_16bit", token=hf_token)
+        print("✓ 16-bit merged model uploaded to Hugging Face Hub")
+        
+        # Upload training metrics CSV if it exists
+        if CSV_LOG_ENABLED and os.path.exists(CSV_LOG_FILE):
+            from huggingface_hub import HfApi
+            api = HfApi()
+            try:
+                print(f"Uploading training metrics: {CSV_LOG_FILE}")
+                api.upload_file(
+                    path_or_fileobj=CSV_LOG_FILE,
+                    path_in_repo="training_metrics.csv",
+                    repo_id=HUB_MODEL_NAME,
+                    token=hf_token
+                )
+                print("✓ Training metrics CSV uploaded to Hugging Face Hub")
+            except Exception as e:
+                print(f"Warning: Failed to upload training metrics: {e}")
+        
+        print(f"\n🎉 Model available at: https://huggingface.co/{HUB_MODEL_NAME}")
     elif PUSH_TO_HUB and not hf_token:
-        print("Warning: HF_TOKEN not found. Skipping 16-bit model upload to Hugging Face.")
+        print("Warning: HF_TOKEN not found. Skipping model upload to Hugging Face.")
+    
+    # Clean up temporary local directory
+    import shutil
+    if os.path.exists(local_16bit_path):
+        shutil.rmtree(local_16bit_path, ignore_errors=True)
+        print(f"Cleaned up temporary directory: {local_16bit_path}")
 
-# Merge to 4bit
-if SAVE_4BIT:
-    model.save_pretrained_merged(f"{HUB_MODEL_NAME}-4bit", tokenizer, save_method="merged_4bit")
-    if PUSH_TO_HUB and hf_token:
-        model.push_to_hub_merged(f"{HUB_MODEL_NAME}-4bit", tokenizer, save_method="merged_4bit", token=hf_token)
-        print("4-bit merged model uploaded to Hugging Face Hub")
+# Skip 4-bit and LoRA uploads - we only want the 16-bit merged model
+print("\nSkipping 4-bit and LoRA adapter uploads - only 16-bit merged model will be uploaded")
 
-# Just LoRA adapters
-if SAVE_LORA:
-    model.save_pretrained(f"{HUB_MODEL_NAME}-lora")
-    tokenizer.save_pretrained(f"{HUB_MODEL_NAME}-lora")
-    if PUSH_TO_HUB and hf_token:
-        model.push_to_hub(f"{HUB_MODEL_NAME}-lora", token=hf_token)
-        tokenizer.push_to_hub(f"{HUB_MODEL_NAME}-lora", token=hf_token)
-        print("LoRA adapters uploaded to Hugging Face Hub")
+print("\n" + "="*50)
+print("TRAINING COMPLETE!")
+print("="*50)
+if PUSH_TO_HUB and hf_token and SAVE_16BIT:
+    print(f"✓ 16-bit merged model uploaded to: https://huggingface.co/{HUB_MODEL_NAME}")
+    if CSV_LOG_ENABLED:
+        print(f"✓ Training metrics included in repository")
+else:
+    print("Model training completed but not uploaded to Hugging Face")
+print("="*50)
