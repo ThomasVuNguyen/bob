@@ -5,11 +5,12 @@ import base64
 from pathlib import Path
 
 # Configuration variables - edit these as needed
-BEDROCK_MODEL_ID = "us.meta.llama3-3-70b-instruct-v1:0"
+BEDROCK_MODEL_ID = "amazon.nova-pro-v1:0"
 # "us.anthropic.claude-sonnet-4-20250514-v1:0"
+# "us.meta.llama3-3-70b-instruct-v1:0"
 DEFAULT_IMAGE_PATH = "stick.jpg"
 MAX_TOKENS = 1000
-DESCRIPTION_PROMPT = "What would a normie think this object is? Just say what regular person would call this thing - no fancy words, just basic everyday language."
+DESCRIPTION_PROMPT = "Describe this in one word or a simple phrase that anyone would understand."
 
 # Load AWS credentials from file
 with open('credentials.json', 'r') as f:
@@ -57,29 +58,66 @@ def describe_image(image_path=None):
             image_format = 'jpeg'
         
         # Prepare request body for Bedrock with image
-        request_body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": MAX_TOKENS,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": f"image/{image_format}",
-                                "data": image_b64
+        if "anthropic.claude" in BEDROCK_MODEL_ID:
+            # Claude format
+            request_body = json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": MAX_TOKENS,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": f"image/{image_format}",
+                                    "data": image_b64
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": DESCRIPTION_PROMPT
                             }
-                        },
-                        {
-                            "type": "text",
-                            "text": DESCRIPTION_PROMPT
-                        }
-                    ]
+                        ]
+                    }
+                ]
+            })
+        elif "amazon.nova" in BEDROCK_MODEL_ID:
+            # Amazon Nova format
+            request_body = json.dumps({
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "image": {
+                                    "format": image_format,
+                                    "source": {
+                                        "bytes": image_b64
+                                    }
+                                }
+                            },
+                            {
+                                "text": DESCRIPTION_PROMPT
+                            }
+                        ]
+                    }
+                ],
+                "inferenceConfig": {
+                    "max_new_tokens": MAX_TOKENS,
+                    "temperature": 0.7,
+                    "top_p": 0.9
                 }
-            ]
-        })
+            })
+        else:
+            # Llama format (text only)
+            request_body = json.dumps({
+                "prompt": f"[INST] {DESCRIPTION_PROMPT} [/INST]",
+                "max_gen_len": MAX_TOKENS,
+                "temperature": 0.7,
+                "top_p": 0.9
+            })
         
         # Call Bedrock
         response = bedrock_runtime.invoke_model(
@@ -91,7 +129,14 @@ def describe_image(image_path=None):
         
         # Parse response
         response_body = json.loads(response.get('body').read())
-        description = response_body['content'][0]['text']
+        
+        if "anthropic.claude" in BEDROCK_MODEL_ID:
+            description = response_body['content'][0]['text']
+        elif "amazon.nova" in BEDROCK_MODEL_ID:
+            description = response_body['output']['message']['content'][0]['text']
+        else:
+            # Llama format
+            description = response_body.get('generation', 'No response generated')
         
         return description
         
