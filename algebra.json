@@ -1,7 +1,7 @@
 {
   "model_config": {
-    "hub_model_name": "ThomasTheMaker/bob2",
-    "base_model_name": "unsloth/gemma-3-270m-it",
+    "hub_model_name": "ThomasTheMaker/bob4",
+    "base_model_name": "unsloth/gemma-3-4b-it-bnb-4bit",
     "max_seq_length": 1024,
     "load_in_4bit": false,
     "load_in_8bit": true,
@@ -32,7 +32,7 @@
     ]
   },
   "training_config": {
-    "per_device_train_batch_size": 8,
+    "per_device_train_batch_size": 2,
     "gradient_accumulation_steps": 2,
     "warmup_steps": 5,
     "max_steps": -1,
