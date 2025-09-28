@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 Automatic GGUF Conversion and Upload Script
-Converts trained model to GGUF format and uploads to Hugging Face
+Converts trained model to GGUF format using llama.cpp conversion tools
 """
 
 from unsloth import FastLanguageModel
 import os
 import json
+import subprocess
+import shutil
 from huggingface_hub import HfApi, create_repo
 
 def create_gguf_directory():
@@ -37,15 +39,15 @@ def load_model(config):
     print("Model loaded successfully!")
     return model, tokenizer
 
-def convert_to_gguf(model, tokenizer, quantization_type="Q8_0", base_model_name="model"):
-    """Convert model to GGUF format"""
+def convert_to_gguf(model, tokenizer, quantization_type="f16", base_model_name="model"):
+    """Convert model to GGUF format using llama.cpp directly"""
     # Variables
     gguf_directory = "gguf"
     
     # Create the main gguf directory if it doesn't exist
     os.makedirs(gguf_directory, exist_ok=True)
     
-    # Create a temporary directory for the model, then convert to GGUF
+    # Create a temporary directory for the merged model
     temp_model_dir = f"temp_model_{quantization_type.lower()}"
     final_filename = f"{gguf_directory}/{base_model_name}-{quantization_type.lower()}.gguf"
     
@@ -53,55 +55,74 @@ def convert_to_gguf(model, tokenizer, quantization_type="Q8_0", base_model_name=
     print(f"Target file: {final_filename}")
     
     try:
-        # First save the model in standard format to create proper directory structure
-        print("Saving model in standard format...")
-        model.save_pretrained(temp_model_dir)
+        # First save the model in merged format
+        print("Saving merged model...")
+        model.save_pretrained_merged(temp_model_dir, tokenizer, save_method="merged_16bit")
         tokenizer.save_pretrained(temp_model_dir)
         
-        # Now convert the saved model to GGUF
-        print("Converting to GGUF...")
-        model.save_pretrained_gguf(
-            temp_model_dir,
-            tokenizer,
-            quantization_type=quantization_type,
-        )
+        # Verify the model directory has the required files
+        if not os.path.exists(os.path.join(temp_model_dir, "config.json")):
+            raise Exception(f"config.json not found in {temp_model_dir}")
         
-        # Move the GGUF file to the final location
-        import glob
-        import shutil
+        print(f"Model saved to: {temp_model_dir}")
+        print("Files in temp directory:")
+        for file in os.listdir(temp_model_dir):
+            print(f"  - {file}")
         
-        # Look for GGUF files both in the temp directory and current directory
-        gguf_files = glob.glob(f"{temp_model_dir}/*.gguf") + glob.glob(f"{temp_model_dir}.*.gguf")
+        # Use llama.cpp conversion script
+        print("Converting to GGUF using llama.cpp...")
+        llama_cpp_dir = "/home/riftuser/bob/llama.cpp"
+        convert_script = os.path.join(llama_cpp_dir, "convert_hf_to_gguf.py")
         
-        if gguf_files:
-            shutil.move(gguf_files[0], final_filename)
-            print(f"GGUF file moved to: {final_filename}")
+        # Map quantization types
+        outtype_map = {
+            "F32": "f32",
+            "F16": "f16", 
+            "BF16": "bf16",
+            "Q8_0": "q8_0",
+            "Q4_0": "q8_0",  # q4_0 not supported, use q8_0
+            "Q2_K": "q8_0",  # q2_k not supported, use q8_0
+        }
+        
+        outtype = outtype_map.get(quantization_type.upper(), "f16")
+        
+        # Run the conversion
+        cmd = [
+            "python", convert_script,
+            os.path.abspath(temp_model_dir),  # Use absolute path
+            "--outfile", os.path.abspath(final_filename),  # Use absolute path
+            "--outtype", outtype,
+            "--verbose"
+        ]
+        
+        print(f"Running command: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=llama_cpp_dir)
+        
+        if result.returncode != 0:
+            print(f"Conversion failed with return code {result.returncode}")
+            print(f"STDOUT: {result.stdout}")
+            print(f"STDERR: {result.stderr}")
+            raise Exception(f"llama.cpp conversion failed: {result.stderr}")
+        
+        print(f"✓ GGUF conversion completed: {final_filename}")
+        
+        # Verify the file was created
+        if os.path.exists(final_filename):
+            file_size = os.path.getsize(final_filename)
+            print(f"✓ File created successfully: {final_filename} ({file_size:,} bytes)")
         else:
-            print(f"Warning: No GGUF file found in {temp_model_dir}")
-            # List what files were created for debugging
-            if os.path.exists(temp_model_dir):
-                files = os.listdir(temp_model_dir)
-                print(f"Files in {temp_model_dir}: {files}")
-            # Also check current directory for gguf files with temp_model prefix
-            current_dir_gguf = glob.glob(f"{temp_model_dir}*.gguf")
-            if current_dir_gguf:
-                print(f"Found GGUF files in current directory: {current_dir_gguf}")
-                shutil.move(current_dir_gguf[0], final_filename)
-                print(f"GGUF file moved to: {final_filename}")
-                # Clean up any remaining temp gguf files
-                for f in current_dir_gguf[1:]:
-                    os.remove(f)
+            raise Exception(f"GGUF file was not created: {final_filename}")
         
         # Clean up temporary directory
         if os.path.exists(temp_model_dir):
-            shutil.rmtree(temp_model_dir, ignore_errors=True)
+            shutil.rmtree(temp_model_dir)
+            print(f"Cleaned up {temp_model_dir}")
             
     except Exception as e:
         print(f"Error during conversion: {e}")
         # Clean up on error
-        import shutil
         if os.path.exists(temp_model_dir):
-            shutil.rmtree(temp_model_dir, ignore_errors=True)
+            shutil.rmtree(temp_model_dir)
         raise
     
     return final_filename
@@ -156,14 +177,12 @@ def main():
     print(f"Source model: {hub_model_name}")
     print(f"GGUF repository: {gguf_repo_name}")
     
-    # Quantization types to convert
+    # Quantization types to convert (only supported ones)
     quantization_types = [
         "F32",      # Full 32-bit precision (largest file)
         "F16",      # Full 16-bit precision 
         "BF16",     # Brain Float 16-bit precision
         "Q8_0",     # 8-bit quantization (good balance)
-        "Q4_0",     # 4-bit quantization (smaller)
-        "Q2_K",     # 2-bit quantization (smallest)
     ]
     
     # Create gguf directory

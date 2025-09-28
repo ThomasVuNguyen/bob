@@ -1,2 +1,7 @@
 credentials.json
 venv/
+Thomas*/
+outputs/
+unsloth_compiled*/
+llama.cpp/
+gguf/
